@@ -21,6 +21,13 @@ public class RoomComfortManualFlow : MonoBehaviour
     [InspectorName("坐下／躺下操作提示")]
     [TextArea(3, 6)]
     public string restingInstructions = "Hold RIGHT mouse to look around.\nRelease to LEFT-click controls. Stand up / Esc to leave.";
+    [Header("屏幕提示与按钮")]
+    [InspectorName("界面大小") , Range(.8f, 1.5f)]
+    public float overlaySize = 1f;
+    [InspectorName("提示字号"), Range(16, 28)]
+    public int overlayFontSize = 20;
+    [InspectorName("调整位置操作提示"), TextArea(2, 5)]
+    public string placementInstructions = "Hold LEFT mouse on the AC and drag it along the wall.\nRelease, then click Save position. Cancel / Esc returns without saving.";
     public float nearDistance = 2.2f;
     public float minimumMountHeight = 1.9f;
     public float bodyWidth = 1.3f, bodyHeight = .4f, wallStandOff = .2f;
@@ -56,6 +63,10 @@ public class RoomComfortManualFlow : MonoBehaviour
     Vector3 inward, horizontal, planeCentre;
     float horizontalMin, horizontalMax, verticalMin, verticalMax;
     LineRenderer mountingOutline;
+    Rect overlayPixels;
+    Vector2 overlayScroll;
+    GUIStyle overlayLabel, overlayButton;
+    Texture2D overlayBackground;
 
     void Start()
     {
@@ -216,7 +227,7 @@ public class RoomComfortManualFlow : MonoBehaviour
         if(editing)
         {
             var pointer=m.position.ReadValue();
-            bool overToolbar=pointer.y>Screen.height-115;
+            bool overToolbar=overlayPixels.Contains(new Vector2(pointer.x,Screen.height-pointer.y));
             if(m.leftButton.wasPressedThisFrame&&!overToolbar&&Time.unscaledTime>ignoreClicksUntil&&Physics.Raycast(playerCamera.ScreenPointToRay(pointer),out var hit,100)&&hit.transform.IsChildOf(acRoot))dragging=true;
             if(dragging&&m.leftButton.isPressed)
             {
@@ -241,32 +252,75 @@ public class RoomComfortManualFlow : MonoBehaviour
     }
     void OnGUI()
     {
-        if(!editing&&!resting)
+        // Reference-width scaling keeps text readable when WebGL renders at high resolution.
+        float scale = Mathf.Max(.8f, Screen.width / 1100f) * overlaySize;
+        float viewWidth = Screen.width / scale, viewHeight = Screen.height / scale;
+        Matrix4x4 oldMatrix = GUI.matrix;
+        Color oldColor = GUI.color;
+        bool oldEnabled = GUI.enabled;
+        GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, Vector3.one * scale);
+        GUI.color = Color.white;
+        if (overlayLabel == null)
         {
-            GUI.Box(new Rect(12,Screen.height-57,Mathf.Min(Screen.width-24,720),45),
-                (currentWall<0?"No wall selected":"Wall "+(currentWall+1))+" | "+(power?"AC ON":"AC OFF")+" | "+new[]{"Low","Medium","High"}[level]+"\n"+status);
-            return;
+            overlayLabel = new GUIStyle(GUI.skin.label) { wordWrap = true, alignment = TextAnchor.UpperLeft, padding = new RectOffset(0,0,0,0) };
+            overlayLabel.normal.textColor = Color.white;
+            overlayButton = new GUIStyle(GUI.skin.button) { wordWrap = true, alignment = TextAnchor.MiddleCenter };
+            overlayBackground = new Texture2D(1,1);
+            overlayBackground.SetPixel(0,0,new Color(.055f,.075f,.095f,.97f));
+            overlayBackground.Apply();
         }
-        GUILayout.BeginArea(new Rect(12,12,Mathf.Min(Screen.width-24,700),resting&&!editing?220:100),GUI.skin.box);
-        if(editing)
+        overlayLabel.fontSize = overlayFontSize;
+        overlayButton.fontSize = overlayFontSize;
+        float width = Mathf.Min(viewWidth-24, 860);
+        float contentWidth = Mathf.Max(80,width-48);
+        string stateText = (currentWall<0?"No wall selected":"Wall "+(currentWall+1))+"  |  "+(power?"AC ON":"AC OFF")+"  |  "+new[]{"Low","Medium","High"}[level];
+        string message = editing ? (valid ? placementInstructions : "This position overlaps a blocked area. Drag the AC to a clear area.") : resting ? restingInstructions : stateText+"\n"+status;
+        float textHeight = overlayLabel.CalcHeight(new GUIContent(message),contentWidth);
+        float buttonHeight = Mathf.Max(44,overlayFontSize*2.4f);
+        int rows = editing ? 1 : resting ? 4 : 0;
+        float stateHeight = resting&&!editing ? overlayLabel.CalcHeight(new GUIContent(stateText),contentWidth)+8 : 0;
+        float contentHeight = textHeight+rows*(buttonHeight+8)+stateHeight;
+        float height = Mathf.Min(contentHeight+24,viewHeight-24);
+        Rect panel = new Rect(12,editing||resting ? 12 : viewHeight-height-12,width,height);
+        overlayPixels = new Rect(panel.x*scale,panel.y*scale,panel.width*scale,panel.height*scale);
+        GUI.DrawTexture(panel,overlayBackground);
+        // A scrollable panel also accommodates longer user-edited instructions in small windows.
+        overlayScroll = GUI.BeginScrollView(new Rect(panel.x+12,panel.y+12,width-24,height-24),overlayScroll,new Rect(0,0,contentWidth,contentHeight));
+        GUI.Label(new Rect(0,0,contentWidth,textHeight),message,overlayLabel);
+        float y = textHeight+8;
+        if (editing)
         {
-            GUILayout.Label(valid?"Drag the AC on the wall. Release, then confirm.":"This position overlaps a blocked area.");
-            GUILayout.BeginHorizontal();GUI.enabled=valid;if(GUILayout.Button("Save position",GUILayout.Height(32)))ConfirmPlacement();GUI.enabled=true;
-            if(GUILayout.Button("Reset position",GUILayout.Height(32)))ResetPosition();
-            if(GUILayout.Button("Cancel",GUILayout.Height(32)))CancelPlacement();GUILayout.EndHorizontal();
+            GUI.enabled=valid;
+            if(OverlayButton(0,3,y,contentWidth,buttonHeight,"Save position"))ConfirmPlacement();
+            GUI.enabled=oldEnabled;
+            if(OverlayButton(1,3,y,contentWidth,buttonHeight,"Reset position"))ResetPosition();
+            if(OverlayButton(2,3,y,contentWidth,buttonHeight,"Cancel"))CancelPlacement();
         }
-        else
+        else if (resting)
         {
-            GUILayout.Label(restingInstructions);
-            GUILayout.BeginHorizontal();for(int i=0;i<4;i++)if(GUILayout.Button("Wall "+(i+1),GUILayout.Height(28)))ChooseWall(i);GUILayout.EndHorizontal();
-            GUILayout.BeginHorizontal();
-            if(GUILayout.Button(power?"AC Off":"AC On",GUILayout.Height(32))){if(power)ACOff();else ACOn();}
-            if(GUILayout.Button("Low"))Low();if(GUILayout.Button("Medium"))Medium();if(GUILayout.Button("High"))High();
-            if(GUILayout.Button("Stand up"))StandUp();GUILayout.EndHorizontal();
-            GUILayout.BeginHorizontal();if(GUILayout.Button("Adjust position"))EditPosition();if(GUILayout.Button("Save Option A"))SaveOption();GUI.enabled=saved;if(GUILayout.Button("Restore A"))RestoreOption();GUI.enabled=true;GUILayout.EndHorizontal();
-            GUILayout.Label((currentWall<0?"No wall selected":"Wall "+(currentWall+1))+" / "+(power?"ON":"OFF")+" / "+new[]{"Low","Medium","High"}[level]);
+            for(int i=0;i<4;i++)if(OverlayButton(i,4,y,contentWidth,buttonHeight,"Wall "+(i+1)))ChooseWall(i);
+            y+=buttonHeight+8;
+            if(OverlayButton(0,4,y,contentWidth,buttonHeight,power?"AC Off":"AC On")){if(power)ACOff();else ACOn();}
+            if(OverlayButton(1,4,y,contentWidth,buttonHeight,"Low"))Low();
+            if(OverlayButton(2,4,y,contentWidth,buttonHeight,"Medium"))Medium();
+            if(OverlayButton(3,4,y,contentWidth,buttonHeight,"High"))High();
+            y+=buttonHeight+8;
+            if(OverlayButton(0,3,y,contentWidth,buttonHeight,"Adjust position"))EditPosition();
+            if(OverlayButton(1,3,y,contentWidth,buttonHeight,"Save Option A"))SaveOption();
+            GUI.enabled=saved;
+            if(OverlayButton(2,3,y,contentWidth,buttonHeight,"Restore A"))RestoreOption();
+            GUI.enabled=oldEnabled;y+=buttonHeight+8;
+            if(OverlayButton(0,1,y,contentWidth,buttonHeight,"Stand up (Esc)"))StandUp();
+            y+=buttonHeight+8;
+            GUI.Label(new Rect(0,y,contentWidth,stateHeight),stateText,overlayLabel);
         }
-        GUILayout.EndArea();
+        GUI.EndScrollView();
+        GUI.enabled=oldEnabled;GUI.color=oldColor;GUI.matrix=oldMatrix;
     }
-    void OnDestroy(){if(mountingOutline&&mountingOutline.sharedMaterial)Destroy(mountingOutline.sharedMaterial);}
+    bool OverlayButton(int column,int columns,float y,float width,float height,string text)
+    {
+        float buttonWidth=(width-8*(columns-1))/columns;
+        return GUI.Button(new Rect(column*(buttonWidth+8),y,buttonWidth,height),text,overlayButton);
+    }
+    void OnDestroy(){if(mountingOutline&&mountingOutline.sharedMaterial)Destroy(mountingOutline.sharedMaterial);if(overlayBackground)Destroy(overlayBackground);}
 }
